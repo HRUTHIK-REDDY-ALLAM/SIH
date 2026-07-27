@@ -132,6 +132,28 @@ export function TraceConsole({ lines, live, heightClass }) {
   )
 }
 
+// ------------------------------------------------------- loading / errors ---
+export function Spinner({ label = 'Loading…' }) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-3 py-16 text-slate-400">
+      <span className="h-8 w-8 rounded-full border-[3px] border-slate-200 border-t-blue-600 animate-spin" />
+      <span className="text-sm">{label}</span>
+    </div>
+  )
+}
+
+export function ErrorBox({ title = 'Something went wrong', detail, onRetry }) {
+  return (
+    <div className="rounded-2xl border border-red-200 bg-red-50 p-5 animate-rise">
+      <div className="font-bold text-red-800 text-sm">{title}</div>
+      {detail && <p className="mt-1 text-sm text-red-700 leading-relaxed">{detail}</p>}
+      {onRetry && (
+        <Button variant="ghost" className="mt-3" onClick={onRetry}>Try again</Button>
+      )}
+    </div>
+  )
+}
+
 // ------------------------------------------------------------------ toast ---
 export function useToast() {
   const [toast, setToast] = useState(null)

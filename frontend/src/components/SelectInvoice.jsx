@@ -1,11 +1,20 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeft, ArrowRight, Building2, CalendarDays, CheckCircle2 } from 'lucide-react'
-import { INVOICES } from '../data'
+import { api } from '../api'
 import { cx, inr } from '../format'
-import { Button, Card, Pill } from './ui'
+import { Button, Card, ErrorBox, Pill, Spinner } from './ui'
 
-export default function SelectInvoice({ onBack, onPick }) {
+export default function SelectInvoice({ token, onBack, onPick }) {
+  const [invoices, setInvoices] = useState(null)
+  const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
+
+  const load = useCallback(() => {
+    setError(null)
+    api('/api/invoices', { token }).then(setInvoices).catch((e) => setError(e.message))
+  }, [token])
+
+  useEffect(() => { load() }, [load])
 
   return (
     <div className="max-w-3xl mx-auto space-y-6">
@@ -16,12 +25,21 @@ export default function SelectInvoice({ onBack, onPick }) {
       <div>
         <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Select an invoice to finance</h1>
         <p className="mt-1.5 text-sm text-slate-500">
-          Unpaid, confirmed export invoices to your Singapore buyers — synced from your e-invoicing records.
+          Unpaid, confirmed export invoices to your Singapore buyers — served live from the invoices table.
         </p>
       </div>
 
+      {error && <ErrorBox title="Could not load invoices" detail={error} onRetry={load} />}
+      {!error && invoices === null && <Spinner label="Loading invoices…" />}
+      {invoices?.length === 0 && (
+        <Card className="p-8 text-center text-sm text-slate-500">
+          No pending invoices left — every receivable is already financed or settled.
+          Use the ↻ button in the header to reset the demo data.
+        </Card>
+      )}
+
       <div className="space-y-4" role="radiogroup" aria-label="Invoices">
-        {INVOICES.map((inv) => {
+        {(invoices ?? []).map((inv) => {
           const isSel = selected?.id === inv.id
           return (
             <Card

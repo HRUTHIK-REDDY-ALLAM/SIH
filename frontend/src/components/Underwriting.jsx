@@ -1,9 +1,16 @@
-import { AlertTriangle, ArrowRight, Bot, Building2, CheckCircle2, Clock, Database, FileCheck2, Gauge, Loader2, MinusCircle, ShieldAlert } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Bot, Building2, CheckCircle2, Clock, Database, FileCheck2, Gauge, Loader2, MinusCircle, ShieldAlert, ShieldCheck } from 'lucide-react'
 import { useUnderwriting } from '../useUnderwriting'
 import { cx, inr, mmss } from '../format'
-import { Button, Card, Pill, TraceConsole } from './ui'
+import { Button, Card, ErrorBox, Pill, TraceConsole } from './ui'
 
-const STEP_ICONS = { gather: Database, verify: FileCheck2, fraud: ShieldAlert, buyer: Building2, score: Gauge }
+const STEP_ICONS = {
+  data_gathering: Database,
+  invoice_verification: FileCheck2,
+  fraud_check: ShieldAlert,
+  buyer_verification: Building2,
+  risk_scoring: Gauge,
+  compliance_kyc: ShieldCheck,
+}
 
 const STATUS = {
   pending: { chip: 'Queued', chipCls: 'bg-slate-100 text-slate-500' },
@@ -15,7 +22,7 @@ const STATUS = {
 }
 
 function StepIcon({ step }) {
-  const Icon = STEP_ICONS[step.id]
+  const Icon = STEP_ICONS[step.id] ?? Gauge
   const base = 'flex h-11 w-11 items-center justify-center rounded-xl border-2 transition-all shrink-0'
   switch (step.status) {
     case 'running':
@@ -58,7 +65,7 @@ function StepIcon({ step }) {
 }
 
 function StepCard({ step, isLast }) {
-  const meta = STATUS[step.status]
+  const meta = STATUS[step.status] ?? STATUS.pending
   return (
     <div className="relative flex gap-4">
       {!isLast && (
@@ -99,7 +106,7 @@ function StepCard({ step, isLast }) {
         )}
         {step.status === 'skipped' && (
           <p className="mt-2.5 text-[13px] text-slate-400 border-t border-slate-100 pt-2.5">
-            Skipped — pipeline halted after the fraud flag.
+            Skipped — pipeline halted before this check.
           </p>
         )}
       </Card>
@@ -107,7 +114,7 @@ function StepCard({ step, isLast }) {
   )
 }
 
-function ResultBanner({ result, elapsed, onContinue }) {
+function ResultBanner({ result, dealStatus, elapsed, onContinue }) {
   const styles = {
     approved: {
       wrap: 'from-emerald-600 to-emerald-700', icon: <CheckCircle2 className="h-7 w-7" />,
@@ -122,9 +129,10 @@ function ResultBanner({ result, elapsed, onContinue }) {
       cta: 'See full details', label: 'DECLINED',
     },
   }
-  const s = styles[result.outcome]
+  const key = dealStatus === 'manual_review' ? 'conditional' : (styles[result.outcome] ? result.outcome : 'declined')
+  const s = styles[key]
   return (
-    <div className={cx('rounded-2xl bg-gradient-to-r text-white p-5 sm:p-6 shadow-lg animate-rise', s.wrap, result.outcome === 'declined' && 'animate-ring-red')}>
+    <div className={cx('rounded-2xl bg-gradient-to-r text-white p-5 sm:p-6 shadow-lg animate-rise', s.wrap, key === 'declined' && 'animate-ring-red')}>
       <div className="flex flex-col sm:flex-row sm:items-center gap-4">
         <div className="flex items-center gap-3.5 flex-1">
           <span className="animate-pop">{s.icon}</span>
@@ -147,10 +155,19 @@ function ResultBanner({ result, elapsed, onContinue }) {
   )
 }
 
-export default function Underwriting({ invoice, onCancel, onFinish }) {
-  const { steps, trace, result, elapsed } = useUnderwriting(invoice)
-  const running = !result
+export default function Underwriting({ token, invoice, onCancel, onFinish }) {
+  const { steps, trace, result, elapsed, payload, error } = useUnderwriting(invoice, token)
+  const running = !result && !error
   const current = steps.find((s) => s.status === 'running')
+
+  if (error) {
+    return (
+      <div className="max-w-2xl mx-auto space-y-4">
+        <ErrorBox title="Underwriting could not run" detail={error} />
+        <Button variant="ghost" onClick={onCancel}>Back to invoices</Button>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -173,6 +190,12 @@ export default function Underwriting({ invoice, onCancel, onFinish }) {
             <span className="font-medium">{invoice.buyer.name}</span>
             <span className="text-slate-300">·</span>
             <span className="font-semibold tabular-nums">{inr(invoice.amount)}</span>
+            {payload && (
+              <>
+                <span className="text-slate-300">·</span>
+                <span className="text-slate-400">deal #{payload.deal.id}</span>
+              </>
+            )}
             {running && current && (
               <>
                 <span className="text-slate-300">·</span>
@@ -187,7 +210,7 @@ export default function Underwriting({ invoice, onCancel, onFinish }) {
           </Pill>
           {running && (
             <button onClick={onCancel} className="text-xs font-medium text-slate-400 hover:text-slate-600 cursor-pointer">
-              Cancel
+              Leave
             </button>
           )}
         </div>
@@ -201,7 +224,7 @@ export default function Underwriting({ invoice, onCancel, onFinish }) {
         <div className="lg:col-span-2 lg:sticky lg:top-20">
           <TraceConsole lines={trace} live={running} heightClass="h-72 lg:h-[460px]" />
           <p className="mt-2 text-[11px] text-slate-400 text-center">
-            Every decision ships with this full reasoning trace — auditable by the exporter and the financier.
+            Every line is read back from the audit_log table — auditable by the exporter and the financier.
           </p>
         </div>
       </div>
@@ -209,8 +232,9 @@ export default function Underwriting({ invoice, onCancel, onFinish }) {
       {result && (
         <ResultBanner
           result={result}
+          dealStatus={payload.deal.status}
           elapsed={elapsed}
-          onContinue={() => onFinish({ invoice, decision: result, trace, steps, elapsed })}
+          onContinue={() => onFinish(payload)}
         />
       )}
     </div>

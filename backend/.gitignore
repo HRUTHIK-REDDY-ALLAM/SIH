@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+tradebridge.db
+tradebridge.db-wal
+tradebridge.db-shm

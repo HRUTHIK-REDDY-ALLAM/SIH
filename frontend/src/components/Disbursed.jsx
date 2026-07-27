@@ -1,5 +1,5 @@
 import { ArrowRight, Banknote, CheckCircle2, Landmark, RefreshCw } from 'lucide-react'
-import { APP, COMPANY } from '../data'
+import { APP } from '../data'
 import { cx, inr } from '../format'
 import { Button, Card, Pill } from './ui'
 
@@ -25,8 +25,9 @@ function TimelineNode({ icon: Icon, title, text, first, last, done }) {
 }
 
 export default function Disbursed({ run, onHome }) {
-  const { invoice, decision } = run
-  const st = decision.settlement
+  const { invoice, decision, deal } = run
+  const st = decision.settlement ?? {}
+  const repaid = deal.status === 'repaid'
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">
@@ -40,13 +41,15 @@ export default function Disbursed({ run, onHome }) {
           </svg>
         </div>
         <h1 className="mt-3 text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900">
-          {inr(decision.net)} is on its way
+          {repaid ? 'Deal settled in full' : `${inr(decision.net)} is on its way`}
         </h1>
         <p className="mt-2 text-sm text-slate-500">
-          NEFT to {COMPANY.bank} · {st.utr} <span className="text-slate-400">(simulated)</span>
+          NEFT to {st.account ?? 'your registered account'} · {st.utr ?? '—'} <span className="text-slate-400">(simulated rails)</span>
         </p>
         <div className="mt-3 flex justify-center">
-          <Pill tone="emerald">Funds disbursed by {APP.financier}</Pill>
+          <Pill tone="emerald">
+            {repaid ? `Repaid — lien released by ${APP.financier}` : `Funds disbursed by ${APP.financier} · deal #${deal.id}`}
+          </Pill>
         </div>
       </div>
 
@@ -57,25 +60,31 @@ export default function Disbursed({ run, onHome }) {
         </div>
         <TimelineNode
           first done icon={Banknote}
-          title={`Today — ${inr(decision.net)} disbursed to you`}
-          text={`${decision.advancePct}% advance of ${inr(decision.advance)}, minus the ${decision.feePct} flat fee (${inr(decision.fee)}). No EMIs, no collateral.`}
+          title={`${inr(decision.net)} disbursed to you`}
+          text={`${decision.advancePct}% advance of ${inr(decision.advance)}, minus the ${decision.feePct} flat fee (${inr(decision.fee)}). No EMIs, no collateral. A lien on this receivable is now registered to ${APP.financier}.`}
         />
         <TimelineNode
-          icon={Landmark}
-          title={`${st.payDate} — ${st.payer} pays the invoice`}
-          text={`${inr(invoice.amount)} lands in the TradeBridge escrow account (${st.tenorDays}-day tenor).`}
+          done={repaid} icon={Landmark}
+          title={`${st.payDate ?? invoice.due} — ${st.payer ?? invoice.buyer.name} pays the invoice`}
+          text={`${inr(invoice.amount)} lands in the TradeBridge escrow account (${st.tenorDays ?? '—'}-day tenor).`}
         />
         <TimelineNode
-          icon={RefreshCw}
+          done={repaid} icon={RefreshCw}
           title="Same day — the loan settles itself"
-          text={`${inr(decision.advance)} advance is auto-recovered by ${APP.financier}. You never have to remember a repayment.`}
+          text={`${inr(decision.advance)} advance is auto-recovered by ${APP.financier} and the lien is released. You never have to remember a repayment.`}
         />
         <TimelineNode
-          last icon={CheckCircle2}
+          last done={repaid} icon={CheckCircle2}
           title={`Balance released to you — ${inr(decision.balance)}`}
-          text={`Total received: ${st.totalToYou} of ${inr(invoice.amount)} · all-in cost ${st.allInCost}.`}
+          text={`Total received: ${st.totalToYou ?? inr(invoice.amount - decision.fee)} of ${inr(invoice.amount)} · all-in cost ${st.allInCost ?? decision.feePct}.`}
         />
       </Card>
+
+      {!repaid && (
+        <p className="text-center text-xs text-slate-400">
+          Tip: in the Financier tab, “Simulate buyer payment” completes this timeline live.
+        </p>
+      )}
 
       <div className="flex justify-center">
         <Button variant="dark" size="lg" onClick={onHome}>
