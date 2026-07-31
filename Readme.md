@@ -415,7 +415,7 @@ Contributions are welcome. Please follow these guidelines:
 
 ## 🙏 Acknowledgements
 
-- **Smart India Hackathon (SIH)** — for providing the platform and problem statement
+- **Singapore India Hackathon (SIH)** — for providing the platform and problem statement
 - **LangGraph** — for the agentic orchestration framework
 - **FastAPI** — for the high-performance async API layer
 - **React** — for the responsive frontend framework
@@ -428,7 +428,7 @@ Contributions are welcome. Please follow these guidelines:
 
 **VittSetu** · वित्त सेतु · *Finance Bridge*
 
-Built with ❤️ for **Smart India Hackathon**
+Built with ❤️ for **Singapore India Hackathon**
 
 <br/>
 
