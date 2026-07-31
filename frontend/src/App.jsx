@@ -89,7 +89,7 @@ export default function App() {
   }
 
   let content
-  if (booting) content = <Spinner label="Connecting to TradeBridge…" />
+  if (booting) content = <Spinner label={`Connecting to ${APP.name}…`} />
   else if (view === 'financier') content = <Financier />
   else if (!user) content = <Login onLogin={handleLogin} />
   else content = screens[screen]
@@ -106,10 +106,11 @@ export default function App() {
 
       <footer className="border-t border-slate-200 bg-white/60">
         <div className="max-w-6xl mx-auto px-4 py-4 text-center text-[11px] leading-relaxed text-slate-400">
-          {APP.name} is a decisioning agent, not a lender — credit is disbursed by RBI-licensed partner financiers.
-          Full-stack prototype: FastAPI + LangGraph + SQLite backend with a real lien registry, consent records and
-          audit log · external data sources (GSTN, Account Aggregator, ACRA, payment rails) are mock adapters over
-          synthetic data.
+          {APP.name} ({APP.meaning}) is a decisioning agent, not a lender — credit is disbursed by RBI-licensed
+          financiers via {APP.itfs}. Full-stack prototype: FastAPI + LangGraph + PostgreSQL/Redis backend with a real
+          lien registry, hash-anchored invoice fingerprinting, trade-graph cycle detection, Shapley score attribution
+          and RAG-grounded compliance · external data sources (GSTN, Account Aggregator, ACRA, payment rails) are
+          mock adapters over synthetic data.
         </div>
       </footer>
     </div>

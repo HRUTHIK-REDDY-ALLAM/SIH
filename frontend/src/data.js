@@ -1,9 +1,11 @@
 // Static UI copy only — all business data now comes from the backend API.
 
 export const APP = {
-  name: 'TradeBridge AI',
-  tagline: 'Export invoice financing in minutes',
+  name: 'VittSetu',
+  meaning: 'वित्त सेतु — “finance bridge”',
+  tagline: 'Instant, explainable export finance',
   financier: 'Nexa Capital NBFC Ltd.',
+  itfs: 'GIFT City ITFS',
 }
 
 export const DEMO_ACCOUNTS = {
@@ -38,15 +40,15 @@ export const HOW_IT_WORKS = [
   { title: 'Link an invoice', text: 'Pick a confirmed export invoice to your Singapore buyer.' },
   { title: 'One-tap consent', text: 'Approve GST + bank data sharing — stored and enforced server-side.' },
   { title: 'AI underwrites live', text: 'A six-node LangGraph pipeline runs the checks and writes every step to an audit log.' },
-  { title: 'Funds the same day', text: 'A licensed partner financier disburses. The loan settles itself when your buyer pays.' },
+  { title: 'Funds the same day', text: 'A licensed financier disburses via GIFT City ITFS. The loan settles itself when your buyer pays.' },
 ]
 
 // Rendered before the first poll returns; the server payload replaces it.
 export const FALLBACK_STEPS = [
   { id: 'data_gathering', title: 'Data Gathering', caption: 'GST returns · bank cash-flows via Account Aggregator' },
   { id: 'invoice_verification', title: 'Invoice Verification', caption: 'Government e-invoice registry (IRN)' },
-  { id: 'fraud_check', title: 'Fraud & Duplicate-Financing Check', caption: 'Central lien registry · circular-trade graph' },
+  { id: 'fraud_check', title: 'Fraud & Duplicate-Financing Check', caption: 'Lien registry · fingerprint hash · trade graph' },
   { id: 'buyer_verification', title: 'Buyer Check', caption: 'ACRA Singapore · payment track record' },
-  { id: 'risk_scoring', title: 'Risk Scoring & Pricing', caption: 'Composite score · advance % · fee' },
-  { id: 'compliance_kyc', title: 'Compliance & KYC', caption: 'Sanctions · exposure mandate · KYC status' },
+  { id: 'risk_scoring', title: 'Risk Scoring & Pricing', caption: 'Composite score · Shapley attribution · fee' },
+  { id: 'compliance_kyc', title: 'Compliance & KYC', caption: 'Sanctions · FEMA/MAS grounding (RAG) · mandate' },
 ].map((s) => ({ ...s, status: 'pending', finding: null }))

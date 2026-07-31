@@ -134,7 +134,7 @@ export default function Dashboard({ token, onStart, onOpenDeal }) {
 
       {/* how it works */}
       <div>
-        <SectionLabel>How TradeBridge works</SectionLabel>
+        <SectionLabel>How VittSetu works</SectionLabel>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           {HOW_IT_WORKS.map((h, i) => {
             const Icon = HOW_ICONS[i]

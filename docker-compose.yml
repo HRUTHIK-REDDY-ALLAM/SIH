@@ -1,0 +1,66 @@
+# VittSetu — full stack in one command:  docker compose up --build
+#
+#   frontend  http://localhost:5173   (nginx serving the built React app)
+#   backend   http://localhost:8000   (FastAPI · docs at /docs)
+#   postgres  localhost:5432          (system of record)
+#   redis     localhost:6379          (cache / session state)
+#
+# The backend seeds the three demo scenarios on first start.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: vittsetu
+      POSTGRES_PASSWORD: vittsetu
+      POSTGRES_DB: vittsetu
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vittsetu -d vittsetu"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      # PRODUCTION: these come from a secrets manager — see backend/app/secrets.py.
+      VS_DATABASE_URL: postgresql+psycopg://vittsetu:vittsetu@postgres:5432/vittsetu
+      REDIS_URL: redis://redis:6379/0
+      VS_JWT_SECRET: ${VS_JWT_SECRET:-vittsetu-dev-secret-do-not-use-in-production}
+      VS_PACING: ${VS_PACING:-1.0}
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Baked into the bundle at build time — the browser calls the API on
+        # the host, not the compose-internal hostname.
+        VITE_API_URL: http://localhost:8000
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:

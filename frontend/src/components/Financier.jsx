@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Banknote, Bot, Check, ChevronDown, Landmark, LogOut, RefreshCw, ShieldAlert, ShieldCheck, X } from 'lucide-react'
+import { Banknote, BookOpen, Bot, Check, ChevronDown, Landmark, LogOut, RefreshCw, Scale3d, ShieldAlert, ShieldCheck, X } from 'lucide-react'
 import { api, tokens } from '../api'
 import { APP, DEMO_ACCOUNTS } from '../data'
 import { cx, inr } from '../format'
-import { Button, Card, ErrorBox, Pill, ScoreGauge, SectionLabel, Spinner, TraceConsole, useToast } from './ui'
+import { AttributionChart, Button, Card, Citations, ErrorBox, Pill, ScoreGauge, SectionLabel, Spinner, TraceConsole, useToast } from './ui'
 
 const STATUS_PILL = {
   repaid: { label: 'Settled', tone: 'emerald' },
@@ -174,6 +174,35 @@ function DealCard({ item, token, onUpdated, showToast }) {
           ) : null}
         </div>
       </div>
+
+      {(d.attribution || d.citations?.length > 0) && (
+        <details className="group border-t border-slate-100">
+          <summary className="flex items-center gap-2 cursor-pointer select-none px-5 py-3 text-xs font-semibold text-slate-500 hover:bg-slate-50">
+            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+            Score attribution & regulatory grounding
+          </summary>
+          <div className="px-5 pb-5 grid grid-cols-1 md:grid-cols-2 gap-6">
+            {d.attribution && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Scale3d className="h-4 w-4 text-blue-600" />
+                  <span className="font-bold text-slate-900 text-xs">Score attribution</span>
+                </div>
+                <AttributionChart attribution={d.attribution} />
+              </div>
+            )}
+            {d.citations?.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <BookOpen className="h-4 w-4 text-blue-600" />
+                  <span className="font-bold text-slate-900 text-xs">Regulatory grounding</span>
+                </div>
+                <Citations citations={d.citations} />
+              </div>
+            )}
+          </div>
+        </details>
+      )}
 
       {(trace?.length ?? 0) > 0 && (
         <details className="group border-t border-slate-100">

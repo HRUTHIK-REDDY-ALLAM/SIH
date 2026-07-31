@@ -2,11 +2,19 @@
 queries the database, computes features, writes its trace to the audit log, and
 returns LangGraph state updates. Nothing here is a hardcoded outcome — the
 demo scenarios emerge from the seeded data.
+
+Fraud & Duplicate-Financing runs three independent layers:
+  1. lien-registry lookup by IRN (exact),
+  2. hash-anchored fingerprint lookup (survives re-invoicing/cosmetic edits),
+  3. circular-trade detection over a networkx graph of trade relationships.
+Compliance grounds its checks in retrieved regulatory passages (RAG) and the
+citations ship inside the decision record.
 """
 import statistics
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
+import networkx as nx
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -14,11 +22,16 @@ from .. import config
 from ..adapters import account_aggregator, acra, gstn, registry, sanctions
 from ..audit import Recorder
 from ..db import now_utc
-from ..models import Buyer, Consent, FinancingDeal, Invoice, Msme, TradeHistory
+from ..fingerprint import invoice_fingerprint
+from ..fingerprint import short as fp_short
+from ..models import (Buyer, Consent, FinancingDeal, Invoice, Msme, TradeLink,
+                      TradeHistory)
 from ..serialize import fmt_date, inr, irn_short
 from . import scoring
-from .explainer import (build_duplicate_decline, build_offer_decision,
-                        build_thin_decline, build_verification_decline)
+from .explainer import (build_circular_decline, build_duplicate_decline,
+                        build_offer_decision, build_thin_decline,
+                        build_verification_decline)
+from .retriever import get_retriever
 
 
 @dataclass
@@ -32,8 +45,21 @@ class PipelineContext:
     features: dict = field(default_factory=dict)
     lien: object = None
     scored: dict | None = None
+    citations: list = field(default_factory=list)
     compliance_notes: list[str] = field(default_factory=list)
     mandate_exceeded: bool = False
+
+
+def _cite(ctx: PipelineContext, nid: str, query: str, delay: float = 0.35):
+    """Retrieve the best regulatory passage for a query, log it, collect it."""
+    hits = get_retriever().search(query, k=1)
+    if not hits:
+        return None
+    p = hits[0]
+    ctx.rec.line(nid, "res", f"Grounding: [{p.ref}] {p.text[:120]}…", delay=delay)
+    if p.ref not in {c["ref"] for c in ctx.citations}:
+        ctx.citations.append({"ref": p.ref, "title": p.doc_title, "excerpt": p.text[:200]})
+    return p
 
 
 def _active_consents(ctx: PipelineContext) -> dict[str, Consent]:
@@ -93,6 +119,7 @@ def data_gathering(ctx: PipelineContext):
 
         rec.line(nid, "req", f"Fetching 12-month bank summary via Account Aggregator "
                              f"(consent {aa_c.consent_ref})", delay=0.4)
+        _cite(ctx, nid, "account aggregator consent artefact purpose limitation fetch")
         bank = account_aggregator.fetch_bank_summary(ctx.msme.bank_account, consent_ref=aa_c.consent_ref)
         credits = bank["monthly_credits"]
         avg_credits = statistics.mean(credits)
@@ -182,41 +209,78 @@ def invoice_verification(ctx: PipelineContext):
 def fraud_check(ctx: PipelineContext):
     def node(_state: dict) -> dict:
         rec, nid = ctx.rec, "fraud_check"
-        short = irn_short(ctx.invoice.irn)
+        inv = ctx.invoice
+        short = irn_short(inv.irn)
         rec.node_start(nid)
 
-        # THE REAL CHECK: query the lien registry table for an active claim.
-        rec.line(nid, "req", f"Searching central lien registry for active pledges on {short}", delay=0.45)
-        lien = registry.find_active_lien(ctx.db, ctx.invoice.irn)
+        # Layer 1+2 — the REAL registry check, anchored two ways.
+        fp = inv.fingerprint or invoice_fingerprint(
+            gstin=ctx.msme.gstin, buyer_uen=ctx.buyer.uen,
+            amount=inv.amount, issued_on=inv.issued_on, currency=inv.currency)
+        if not inv.fingerprint:
+            inv.fingerprint = fp
+            ctx.db.commit()
+        ctx.features["fingerprint"] = fp
+
+        rec.line(nid, "calc", "Hash-anchored fingerprint (SHA-256 over seller GSTIN · buyer UEN · "
+                              f"amount · issue date) = {fp_short(fp)}", delay=0.45)
+        rec.line(nid, "req", f"Searching central lien registry — by IRN {short} AND by content fingerprint",
+                 delay=0.45)
+        _cite(ctx, nid, "receivables registry existing lien assignment before financing")
+
+        lien_irn = registry.find_active_lien(ctx.db, inv.irn)
+        lien_fp = registry.find_active_lien_by_fingerprint(ctx.db, fp)
+        lien = lien_irn or lien_fp
         if lien is not None:
+            if lien_irn and (lien_fp is None or lien_fp.id == lien_irn.id):
+                matched_by = ("IRN + content fingerprint"
+                              if (lien_irn.fingerprint and lien_irn.fingerprint == fp) else "IRN")
+            elif lien_irn is None:
+                matched_by = "content fingerprint (IRN differs — resubmission suspected)"
+            else:
+                matched_by = "IRN + content fingerprint"
             ctx.lien = lien
-            rec.line(nid, "warn", "Registry returned 1 match — retrieving record…", delay=0.7)
-            rec.line(nid, "flag", f"ALERT — active lien found: this invoice was financed by {lien.lender} "
-                                  f"on {fmt_date(lien.financed_on)} (ref {lien.ref})", delay=0.8,
-                     data={"lender": lien.lender, "ref": lien.ref,
-                           "financed_on": lien.financed_on.isoformat()})
+            rec.line(nid, "warn", "Registry returned a match — retrieving record…", delay=0.7)
+            rec.line(nid, "flag", f"ALERT — active lien found (matched by {matched_by}): financed by "
+                                  f"{lien.lender} on {fmt_date(lien.financed_on)} (ref {lien.ref})",
+                     delay=0.8,
+                     data={"lender": lien.lender, "ref": lien.ref, "matched_by": matched_by,
+                           "financed_on": lien.financed_on.isoformat(), "fingerprint": fp})
             rec.line(nid, "flag", "Duplicate financing detected — the same receivable cannot back two loans",
                      delay=0.55)
             rec.line(nid, "flag", "Declining this request · notifying the financier network · deal logged for review",
                      delay=0.45)
             rec.node_complete(nid, "flagged",
-                              f"DUPLICATE FINANCING — already pledged to {lien.lender} on {fmt_date(lien.financed_on)}.")
-            ctx.deal.decision = build_duplicate_decline(lien=lien, irn_short=short)
+                              f"DUPLICATE FINANCING — already pledged to {lien.lender} "
+                              f"on {fmt_date(lien.financed_on)} (matched by {matched_by}).")
+            ctx.deal.decision = build_duplicate_decline(lien=lien, irn_short=short,
+                                                        matched_by=matched_by, fingerprint=fp)
             return {"halted": True, "halt_reason": "duplicate_financing"}
 
-        rec.line(nid, "res", "No lien, assignment or prior financing found on this receivable", delay=0.5)
+        rec.line(nid, "res", f"No active lien by IRN · no fingerprint collision for {fp_short(fp)}", delay=0.5)
 
-        graph = gstn.counterparty_graph(ctx.msme.gstin)
-        rec.line(nid, "req", f"Scanning counterparty graph ({graph['linked_entities']} linked entities) "
-                             "for circular-trade patterns", delay=0.4)
-        circular = [p for p in graph["circular_pairs"] if ctx.buyer.uen in p]
-        if circular:
-            rec.line(nid, "flag", f"Circular trade suspected across {len(circular)} entity pairs", delay=0.5)
-            rec.node_complete(nid, "flagged", "Circular-trade pattern detected in the counterparty graph.")
-            ctx.deal.decision = build_verification_decline(
-                irn_short=short, problem="a circular-trade pattern involves this buyer")
+        # Layer 3 — circular-trade detection over the financing-relationship graph.
+        links = ctx.db.execute(select(TradeLink)).scalars().all()
+        graph = nx.DiGraph()
+        graph.add_edges_from((l.src, l.dst) for l in links)
+        graph.add_edge(ctx.msme.gstin, ctx.buyer.uen)  # this deal's edge
+        rec.line(nid, "req", f"Building financing-relationship graph — {graph.number_of_nodes()} entities · "
+                             f"{graph.number_of_edges()} edges · running cycle scan (Johnson's algorithm)",
+                 delay=0.45)
+        cycles = [c for c in nx.simple_cycles(graph) if len(c) <= 6]
+        deal_cycles = [c for c in cycles if ctx.msme.gstin in c and ctx.buyer.uen in c]
+        if deal_cycles:
+            path = " → ".join(deal_cycles[0] + [deal_cycles[0][0]])
+            rec.line(nid, "flag", f"CIRCULAR TRADING — financing this deal closes a loop: {path}", delay=0.7)
+            rec.node_complete(nid, "flagged", "Circular-trading loop detected in the financing graph.")
+            ctx.deal.decision = build_circular_decline(cycle=deal_cycles[0])
             return {"halted": True, "halt_reason": "circular_trade"}
-        rec.line(nid, "res", "No circular flows · no related-party round-tripping detected", delay=0.4)
+        if cycles:
+            sample = " → ".join(cycles[0] + [cycles[0][0]])
+            rec.line(nid, "res", f"{len(cycles)} circular cluster(s) known elsewhere in the network "
+                                 f"({sample}) — none involve this deal's parties", delay=0.45)
+        else:
+            rec.line(nid, "res", "No circular flows anywhere in the current trade graph", delay=0.4)
 
         # Velocity check — real SQL over this exporter's recent requests.
         recent = ctx.db.execute(
@@ -231,8 +295,10 @@ def fraud_check(ctx: PipelineContext):
             ctx.compliance_notes.append(f"High request velocity: {recent} requests in 24h.")
 
         ctx.features["fraud_clean"] = True
-        rec.line(nid, "ok", "Clean — no duplicate financing, no fraud signals", delay=0.25)
-        rec.node_complete(nid, "done", "Invoice is unpledged — no duplicate financing, no circular-trade signals.")
+        rec.line(nid, "ok", "Clean — no lien, no fingerprint collision, no circular-trade loop", delay=0.25)
+        rec.node_complete(nid, "done",
+                          "Receivable is unpledged (IRN + fingerprint) and the trade graph shows no "
+                          "circular-financing loop.")
         return {}
 
     return node
@@ -315,22 +381,25 @@ def risk_scoring(ctx: PipelineContext):
 
         scored = scoring.compute(ctx.features)
         ctx.scored = scored
-        comp = scored["components"]
-        rec.line(nid, "calc", f"Components — exporter {comp['exporter_health']} · cash-flow {comp['cash_flow']} · "
-                              f"buyer {comp['buyer_strength']} · relationship {comp['relationship']} · "
-                              f"concentration {comp['concentration_penalty']}", delay=0.5,
-                 data=comp)
+        attr = scored["attribution"]
+        contribs = attr["contributions"]
+        top = contribs[0]
+        drag = min(contribs, key=lambda c: c["phi"])
+        rec.line(nid, "calc", f"Exact Shapley attribution vs neutral baseline ({attr['baseValue']}): "
+                              f"strongest driver {top['label']} {top['phi']:+.1f} · "
+                              f"biggest drag {drag['label']} {drag['phi']:+.1f}", delay=0.5,
+                 data=attr)
         rec.line(nid, "calc", f"Composite risk score = {scored['score']} / 100 → {scored['band'].upper()}",
                  delay=0.45)
 
         if scored["outcome"] == "approved":
-            nums_advance = ctx.invoice.amount * scored["advance_pct"] // 100
+            advance = ctx.invoice.amount * scored["advance_pct"] // 100
             rec.line(nid, "ok", f"Decision path: APPROVE — advance {scored['advance_pct']}% "
-                                f"({inr(nums_advance)}) at {scored['fee_rate'] * 100:.2f}% flat fee", delay=0.4)
+                                f"({inr(advance)}) at {scored['fee_rate'] * 100:.2f}% flat fee", delay=0.4)
         elif scored["outcome"] == "conditional":
-            nums_advance = ctx.invoice.amount * scored["advance_pct"] // 100
+            advance = ctx.invoice.amount * scored["advance_pct"] // 100
             rec.line(nid, "warn", f"Decision path: CONDITIONAL — advance capped at {scored['advance_pct']}% "
-                                  f"({inr(nums_advance)}) at {scored['fee_rate'] * 100:.2f}% flat · "
+                                  f"({inr(advance)}) at {scored['fee_rate'] * 100:.2f}% flat · "
                                   "manual review available", delay=0.4)
         else:
             rec.line(nid, "flag", f"Decision path: DECLINE — score {scored['score']} below financing threshold",
@@ -356,11 +425,28 @@ def compliance_kyc(ctx: PipelineContext):
         rec.line(nid, "res" if kyc_ok else "warn",
                  f"Exporter KYC status: {ctx.msme.kyc_status} (CKYC/DigiLocker record on file — mock source)",
                  delay=0.4)
+        _cite(ctx, nid, "KYC verified precondition disbursal CKYC incomplete expired")
         if not kyc_ok:
             ctx.compliance_notes.append("KYC incomplete — manual verification required before disbursal.")
             ctx.mandate_exceeded = True
 
-        rec.line(nid, "res", "Sanctions screening: 0 hits across OFAC / UN / MAS lists (mock adapter)", delay=0.4)
+        rec.line(nid, "res", "Sanctions screening: 0 hits across UN / OFAC / MAS lists (mock adapter)", delay=0.4)
+        _cite(ctx, nid, "sanctions screening exporter foreign buyer lists prohibited")
+
+        # FEMA export-realisation window (grounded in the retrieved passage).
+        receivable_days = (ctx.invoice.due_on - ctx.invoice.issued_on).days
+        fema = _cite(ctx, nid, "export value realised repatriated nine months financing tenor window")
+        if receivable_days <= config.FEMA_REALISATION_DAYS:
+            rec.line(nid, "calc", f"Receivable period {receivable_days}d from issue — inside the "
+                                  f"{config.FEMA_REALISATION_DAYS}-day FEMA realisation window"
+                                  + (f" [{fema.ref}]" if fema else ""), delay=0.4)
+        else:
+            rec.line(nid, "warn", f"Receivable period {receivable_days}d EXCEEDS the FEMA realisation window "
+                                  f"({config.FEMA_REALISATION_DAYS}d) — not eligible without RBI approval",
+                     delay=0.4)
+            ctx.compliance_notes.append(
+                f"Receivable period {receivable_days}d exceeds the FEMA realisation window.")
+            ctx.mandate_exceeded = True
 
         # Real exposure math against live deals in the database.
         exposure = ctx.db.execute(
@@ -374,6 +460,7 @@ def compliance_kyc(ctx: PipelineContext):
             proposed = ctx.invoice.amount * ctx.scored["advance_pct"] // 100
         rec.line(nid, "calc", f"Exposure check: live {inr(exposure)} + proposed {inr(proposed)} vs "
                               f"mandate cap {inr(config.MANDATE_MAX_EXPOSURE)}", delay=0.45)
+        _cite(ctx, nid, "delegated mandate limits exposure caps tenor automated acceptance financier")
         if exposure + proposed > config.MANDATE_MAX_EXPOSURE:
             rec.line(nid, "warn", "Proposed advance exceeds the auto-disburse mandate — routing to the "
                                   "financier desk for manual sign-off", delay=0.4)
@@ -393,7 +480,8 @@ def compliance_kyc(ctx: PipelineContext):
                                            "financier sign-off required.")
         else:
             rec.line(nid, "ok", "Within delegated mandate — eligible for auto-disbursal", delay=0.3)
-            rec.node_complete(nid, "done", "Compliance clear — KYC verified, no sanctions hits, within mandate.")
+            rec.node_complete(nid, "done", "Compliance clear — KYC verified, no sanctions hits, "
+                                           "FEMA window satisfied, within mandate.")
         return {}
 
     return node
@@ -406,46 +494,57 @@ def finalize(ctx: PipelineContext):
         deal = ctx.deal
         deal.features = dict(ctx.features)
 
+        # Compute the outcome into locals first. `deal.status` is assigned only
+        # at the very end (see the ordering note below).
+        scored = ctx.scored
         if state.get("halted"):
-            # Decision was set by the halting node (duplicate/verification declines);
-            # consent halts fall through to a generic decline here.
-            if deal.decision is None:
-                deal.decision = {
-                    "outcome": "declined",
-                    "headline": "Declined — pipeline halted",
-                    "banner": f"Underwriting halted: {state.get('halt_reason', 'unknown reason')}.",
-                    "reasons": ["The pipeline halted before a full assessment could be made."],
-                    "nextSteps": ["Resolve the issue above and request financing again."],
-                }
-            deal.status = "declined"
+            # Decision was set by the halting node (duplicate/circular/verification
+            # declines); consent halts fall through to a generic decline here.
+            decision = deal.decision or {
+                "outcome": "declined",
+                "headline": "Declined — pipeline halted",
+                "banner": f"Underwriting halted: {state.get('halt_reason', 'unknown reason')}.",
+                "reasons": ["The pipeline halted before a full assessment could be made."],
+                "nextSteps": ["Resolve the issue above and request financing again."],
+            }
+            final_status = "declined"
             rec.sys("Pipeline halted — remaining checks skipped.")
+        elif scored["outcome"] == "declined":
+            decision = build_thin_decline(scored=scored, citations=ctx.citations)
+            final_status = "declined"
         else:
-            scored = ctx.scored
             tenor_days = max((ctx.invoice.due_on - date.today()).days, 1)
-            if scored["outcome"] == "declined":
-                deal.decision = build_thin_decline(scored=scored)
-                deal.status = "declined"
-            else:
-                extra = ctx.compliance_notes if ctx.mandate_exceeded else None
-                deal.decision = build_offer_decision(
-                    outcome=scored["outcome"], scored=scored, features=ctx.features,
-                    invoice=ctx.invoice, buyer=ctx.buyer, tenor_days=tenor_days,
-                    extra_reasons=extra,
-                )
-                deal.status = "manual_review" if ctx.mandate_exceeded else scored["outcome"]
-                if ctx.mandate_exceeded:
-                    deal.decision["manualReview"] = True
+            extra = ctx.compliance_notes if ctx.mandate_exceeded else None
+            decision = build_offer_decision(
+                outcome=scored["outcome"], scored=scored, features=ctx.features,
+                invoice=ctx.invoice, buyer=ctx.buyer, tenor_days=tenor_days,
+                citations=ctx.citations, extra_reasons=extra,
+            )
+            final_status = "manual_review" if ctx.mandate_exceeded else scored["outcome"]
+            if ctx.mandate_exceeded:
+                decision["manualReview"] = True
+
+        decision = dict(decision)
+        decision.setdefault("citations", ctx.citations)  # every path carries them
+        deal.decision = decision
+        if not state.get("halted"):
             deal.score = scored["score"]
             deal.band = scored["band"]
-            deal.advance_pct = deal.decision.get("advancePct")
-            deal.advance_amount = deal.decision.get("advance")
-            deal.fee_amount = deal.decision.get("fee")
-            deal.net_amount = deal.decision.get("net")
+            deal.advance_pct = decision.get("advancePct")
+            deal.advance_amount = decision.get("advance")
+            deal.fee_amount = decision.get("fee")
+            deal.net_amount = decision.get("net")
 
+        # ORDERING MATTERS: write the closing audit rows BEFORE the status
+        # leaves "running". Clients poll on status and stop (and the API caches
+        # the payload) the moment it flips — flipping first would let a poll
+        # freeze a trace that is still missing its last lines.
+        rec.decision(decision)
+        rec.sys("Decision issued. Full reasoning persisted to the audit log.")
+
+        deal.status = final_status
         deal.decided_at = now_utc()
         ctx.db.commit()
-        rec.decision(deal.decision)
-        rec.sys("Decision issued. Full reasoning persisted to the audit log.")
         return {}
 
     return node

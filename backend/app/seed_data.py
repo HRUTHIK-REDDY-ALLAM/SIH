@@ -2,9 +2,14 @@
 
 - Invoice A (Meridian, ₹20L): clean file -> the pipeline approves at 80%.
 - Invoice B (Straits, ₹34L): an ACTIVE LIEN row exists in financing_registry
-  (financed by Apex Trade Capital) -> the fraud node genuinely finds it.
+  (financed by Apex Trade Capital), carrying BOTH the IRN and the invoice's
+  content fingerprint -> the fraud node genuinely finds it on both anchors.
 - Invoice C (Lion City, ₹8.5L): buyer is 17 months old with zero rows in
   trade_history -> thin file -> conditional 50%.
+
+Plus a circular-trading cluster among three third-party entities in
+trade_links — the graph scan detects it live (and would halt any deal whose
+parties sit on that loop).
 
 Outcomes are not hardcoded anywhere: they emerge from this data.
 """
@@ -15,8 +20,9 @@ from sqlalchemy.orm import Session
 from . import demo_world as W
 from .auth import hash_password
 from .db import Base, engine
+from .fingerprint import invoice_fingerprint
 from .models import (Buyer, FinancingDeal, FinancingRegistryEntry, Invoice,
-                     Msme, TradeHistory, User)
+                     Msme, TradeHistory, TradeLink, User)
 
 TODAY = date.today()
 
@@ -47,25 +53,43 @@ def seed(db: Session) -> None:
     db.flush()
 
     # --- the three demo invoices (status pending) ---------------------------
-    inv_a = Invoice(msme_id=saanvi.id, buyer_id=meridian.id, code="INV-2026-0142",
-                    irn=W.IRN_A, amount=2_000_000,
-                    issued_on=TODAY - timedelta(days=15), due_on=TODAY + timedelta(days=45),
-                    goods="300 cartons · organic cotton knitwear", hsn="6109")
-    inv_b = Invoice(msme_id=saanvi.id, buyer_id=straits.id, code="INV-2026-0156",
-                    irn=W.IRN_B, amount=3_400_000,
-                    issued_on=TODAY - timedelta(days=22), due_on=TODAY + timedelta(days=60),
-                    goods="520 rolls · dyed cotton fabric", hsn="5208")
-    inv_c = Invoice(msme_id=saanvi.id, buyer_id=lion.id, code="INV-2026-0161",
-                    irn=W.IRN_C, amount=850_000,
-                    issued_on=TODAY - timedelta(days=6), due_on=TODAY + timedelta(days=30),
-                    goods="120 cartons · knit t-shirts, pilot order", hsn="6109")
+    def _inv(buyer, code, irn, amount, issued_days_ago, due_in_days, goods, hsn):
+        issued = TODAY - timedelta(days=issued_days_ago)
+        return Invoice(
+            msme_id=saanvi.id, buyer_id=buyer.id, code=code, irn=irn,
+            fingerprint=invoice_fingerprint(gstin=W.GSTIN_SAANVI, buyer_uen=buyer.uen,
+                                            amount=amount, issued_on=issued),
+            amount=amount, issued_on=issued, due_on=TODAY + timedelta(days=due_in_days),
+            goods=goods, hsn=hsn,
+        )
+
+    inv_a = _inv(meridian, "INV-2026-0142", W.IRN_A, 2_000_000, 15, 45,
+                 "300 cartons · organic cotton knitwear", "6109")
+    inv_b = _inv(straits, "INV-2026-0156", W.IRN_B, 3_400_000, 22, 60,
+                 "520 rolls · dyed cotton fabric", "5208")
+    inv_c = _inv(lion, "INV-2026-0161", W.IRN_C, 850_000, 6, 30,
+                 "120 cartons · knit t-shirts, pilot order", "6109")
     db.add_all([inv_a, inv_b, inv_c])
 
     # --- THE FRAUD SEED: invoice B already carries an active lien -----------
+    # The registry row is anchored by BOTH the IRN and the content fingerprint,
+    # so the fraud node catches it even if the invoice were re-issued.
     db.add(FinancingRegistryEntry(
-        irn=W.IRN_B, lender="Apex Trade Capital NBFC",
+        irn=W.IRN_B, fingerprint=inv_b.fingerprint,
+        lender="Apex Trade Capital NBFC",
         financed_on=TODAY - timedelta(days=13), ref="TRD-2026-88412", status="active",
     ))
+
+    # --- trade-relationship graph (for circular-trade detection) ------------
+    # Normal flows: exporter -> each buyer. Plus a known circular cluster among
+    # three unrelated entities that the graph scan surfaces on every run.
+    for buyer in (meridian, straits, lion, orchid):
+        db.add(TradeLink(src=W.GSTIN_SAANVI, dst=buyer.uen, kind="trade"))
+    db.add_all([
+        TradeLink(src="KOVA IMPEX LLP", dst="BRIGHTLINE TRADERS", kind="financing"),
+        TradeLink(src="BRIGHTLINE TRADERS", dst="SUNDA EXPORTS PL", kind="financing"),
+        TradeLink(src="SUNDA EXPORTS PL", dst="KOVA IMPEX LLP", kind="financing"),
+    ])
 
     # --- buyer payment history (real rows the pipeline aggregates) ----------
     early_pattern = [2, 1, 3, 2, 1, 2, 2, 1, 3, 2, 1, 2, 2, 1]  # avg 1.8 days early
@@ -102,8 +126,10 @@ def seed(db: Session) -> None:
         repaid = created + timedelta(days=45)
         advance = amount * 80 // 100
         fee = round(advance * 0.0175)
+        fp = invoice_fingerprint(gstin=W.GSTIN_SAANVI, buyer_uen=buyer.uen,
+                                 amount=amount, issued_on=created - timedelta(days=5))
         inv = Invoice(msme_id=saanvi.id, buyer_id=buyer.id, code=code,
-                      irn=(irn_stub * 4)[:64], amount=amount,
+                      irn=(irn_stub * 4)[:64], fingerprint=fp, amount=amount,
                       issued_on=created - timedelta(days=5), due_on=repaid,
                       goods="Cotton knitwear export", hsn="6109", status="repaid")
         db.add(inv)
@@ -120,8 +146,9 @@ def seed(db: Session) -> None:
             created_at=_dt(created), decided_at=_dt(created, 10, 2, 8),
             financed_at=_dt(created, 10, 6), repaid_at=_dt(repaid, 11),
         ))
-        db.add(FinancingRegistryEntry(irn=inv.irn, lender="Nexa Capital NBFC Ltd.",
-                                      financed_on=created, ref=f"TB-H{code[-4:]}",
+        db.add(FinancingRegistryEntry(irn=inv.irn, fingerprint=fp,
+                                      lender="Nexa Capital NBFC Ltd.",
+                                      financed_on=created, ref=f"VS-H{code[-4:]}",
                                       status="released"))
 
     # --- demo accounts ------------------------------------------------------

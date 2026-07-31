@@ -19,14 +19,6 @@ class User(Base):
     msme: Mapped["Msme | None"] = relationship()
 
 
-class Token(Base):
-    __tablename__ = "tokens"
-
-    token: Mapped[str] = mapped_column(String(64), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=now_utc)
-
-
 class Msme(Base):
     __tablename__ = "msmes"
 
@@ -59,6 +51,10 @@ class Invoice(Base):
     buyer_id: Mapped[int] = mapped_column(ForeignKey("buyers.id"))
     code: Mapped[str] = mapped_column(String(30), unique=True)
     irn: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    # SHA-256 over the invoice's economic identity (see app/fingerprint.py) —
+    # lets the fraud node recognise the receivable even if resubmitted with a
+    # regenerated IRN or cosmetic edits.
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True, default="")
     amount: Mapped[int] = mapped_column(Integer)  # INR, whole rupees
     currency: Mapped[str] = mapped_column(String(10), default="INR")
     issued_on: Mapped[date] = mapped_column(Date)
@@ -96,6 +92,7 @@ class FinancingRegistryEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     irn: Mapped[str] = mapped_column(String(80), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True, default="")
     lender: Mapped[str] = mapped_column(String(255))
     financed_on: Mapped[date] = mapped_column(Date)
     ref: Mapped[str] = mapped_column(String(40))
@@ -114,6 +111,22 @@ class TradeHistory(Base):
     amount: Mapped[int] = mapped_column(Integer)
     due_on: Mapped[date] = mapped_column(Date)
     paid_on: Mapped[date] = mapped_column(Date)
+
+
+class TradeLink(Base):
+    """Directed financing/trade relationships between entities.
+
+    The fraud node loads these edges into a networkx DiGraph and runs cycle
+    detection — circular-trading rings (A funds via B via C back to A) that a
+    plain duplicate lookup can never catch.
+    """
+
+    __tablename__ = "trade_links"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    src: Mapped[str] = mapped_column(String(64), index=True)  # entity key (GSTIN/UEN/name)
+    dst: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="trade")
 
 
 class FinancingDeal(Base):

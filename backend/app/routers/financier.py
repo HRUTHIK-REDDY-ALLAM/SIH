@@ -3,11 +3,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
+from .. import cache, config
 from ..adapters import registry, settlement
 from ..audit import Recorder
 from ..auth import require_financier
 from ..db import get_db, now_utc
+from ..fingerprint import short as fp_short
 from ..models import FinancingDeal, User
 from ..serialize import fmt_date, inr, serialize_deal
 
@@ -20,7 +21,8 @@ def _facts(db: Session, deal: FinancingDeal) -> list[list[str]]:
     decision = deal.decision or {}
     if decision.get("evidence"):
         ev = decision["evidence"]
-        lien_fact = f"MATCH — {ev['lender']} ({ev['financedOn']})"
+        matched = f" · matched by {ev['matchedBy']}" if ev.get("matchedBy") else ""
+        lien_fact = f"MATCH — {ev['lender']} ({ev['financedOn']}){matched}"
     else:
         lien_fact = "Clean — no prior pledge at underwriting time"
     gst = (f"₹{f['turnover_cr']} Cr · {f['gst_filings_on_time']}/{f['gst_filings_total']} filings on time"
@@ -33,6 +35,7 @@ def _facts(db: Session, deal: FinancingDeal) -> list[list[str]]:
         ["Bank inflows", bank],
         ["Buyer", inv.buyer.name],
         ["Invoice", f"{inr(inv.amount)} · due {fmt_date(inv.due_on)}"],
+        ["Invoice fingerprint", f"{fp_short(inv.fingerprint)} (SHA-256, content-anchored)"],
         ["Lien registry", lien_fact],
     ]
 
@@ -86,6 +89,7 @@ def override_deal(deal_id: int, body: OverrideRequest,
         decision["banner"] = "Approved by the financier's credit desk after manual review."
     deal.decision = decision
     db.commit()
+    cache.invalidate_deal(deal.id)
     Recorder(db, deal.id).override(
         f"Manual override by {user.email}: {body.action.upper()}"
         + (f" — “{body.note}”" if body.note else ""))
@@ -112,6 +116,7 @@ def simulate_repayment(deal_id: int, user: User = Depends(require_financier),
     deal.status = "repaid"
     deal.repaid_at = now_utc()
     db.commit()
+    cache.invalidate_deal(deal.id)
 
     balance = inv.amount - (deal.advance_amount or 0)
     rec.settlement(f"Buyer payment received — {inv.buyer.name} paid {inr(inv.amount)} into escrow "

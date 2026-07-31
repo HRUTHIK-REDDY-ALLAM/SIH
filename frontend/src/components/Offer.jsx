@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { ArrowLeft, ArrowRight, Banknote, CheckCircle2, ChevronDown, Hourglass, Landmark, Scale, Sparkles } from 'lucide-react'
+import { ArrowLeft, ArrowRight, Banknote, BookOpen, CheckCircle2, ChevronDown, Hourglass, Landmark, Scale, Scale3d, Sparkles } from 'lucide-react'
 import { api } from '../api'
 import { APP } from '../data'
 import { cx, inr } from '../format'
-import { Button, Card, ErrorBox, Pill, ScoreGauge, SectionLabel, TraceConsole, useToast } from './ui'
+import { AttributionChart, Button, Card, Citations, ErrorBox, Pill, ScoreGauge, SectionLabel, TraceConsole, useToast } from './ui'
 
 function Row({ label, value, strong, negative }) {
   return (
@@ -114,9 +114,10 @@ export default function Offer({ token, run, onUpdated, onAccepted, onHome }) {
           <div className="mx-6 mb-5 rounded-xl bg-slate-50 border border-slate-200 px-4 py-3 flex items-start gap-2.5">
             <Landmark className="h-4 w-4 text-slate-400 mt-0.5 shrink-0" />
             <p className="text-xs text-slate-500 leading-relaxed">
-              Disbursed by <span className="font-semibold text-slate-700">{APP.financier}</span> (RBI-registered).
-              Accepting registers a lien on this receivable in the central registry — the same table the fraud
-              check queries.
+              Placed on <span className="font-semibold text-slate-700">{APP.itfs}</span> and disbursed by{' '}
+              <span className="font-semibold text-slate-700">{APP.financier}</span> (RBI-registered).
+              Accepting registers a lien on this receivable — anchored by both its IRN and its content
+              fingerprint, in the same registry the fraud check queries.
             </p>
           </div>
 
@@ -152,6 +153,19 @@ export default function Offer({ token, run, onUpdated, onAccepted, onHome }) {
             </Card>
           )}
 
+          {decision.attribution && (
+            <Card className="p-5">
+              <div className="flex items-center gap-2 mb-1">
+                <Scale3d className="h-4 w-4 text-blue-600" />
+                <span className="font-bold text-slate-900 text-sm">What moved your score</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mb-3">
+                Exact per-feature contributions — a computation, not a summary.
+              </p>
+              <AttributionChart attribution={decision.attribution} />
+            </Card>
+          )}
+
           <Card className="p-5">
             <div className="flex items-center gap-2 mb-3">
               <Sparkles className="h-4 w-4 text-blue-600" />
@@ -165,6 +179,19 @@ export default function Offer({ token, run, onUpdated, onAccepted, onHome }) {
               ))}
             </ul>
           </Card>
+
+          {decision.citations?.length > 0 && (
+            <Card className="p-5">
+              <div className="flex items-center gap-2 mb-1">
+                <BookOpen className="h-4 w-4 text-blue-600" />
+                <span className="font-bold text-slate-900 text-sm">Regulatory grounding</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mb-3">
+                Passages the compliance node retrieved and reasoned over.
+              </p>
+              <Citations citations={decision.citations} />
+            </Card>
+          )}
 
           <details className="group">
             <summary className="flex items-center gap-2 cursor-pointer select-none rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50">

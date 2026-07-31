@@ -83,6 +83,76 @@ export function ScoreGauge({ score, band, size = 150 }) {
   )
 }
 
+// ------------------------------------------------- Shapley attribution -----
+// Renders the exact per-feature contributions the backend computed. Bars are
+// signed and scaled against the largest |φ| in the set, so a reader can see at
+// a glance which features carried the score and which dragged it down.
+export function AttributionChart({ attribution }) {
+  if (!attribution?.contributions?.length) return null
+  const { contributions, baseValue, baseLabel, method } = attribution
+  const max = Math.max(...contributions.map((c) => Math.abs(c.phi)), 1)
+
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 mb-3">
+        <span className="text-xs text-slate-500">
+          Baseline <span className="font-semibold text-slate-700 tabular-nums">{baseValue}</span>
+          <span className="text-slate-400"> ({baseLabel})</span>
+        </span>
+        <span className="text-[11px] text-slate-400">points vs baseline</span>
+      </div>
+
+      <div className="space-y-2.5">
+        {contributions.map((c) => {
+          const positive = c.phi >= 0
+          const width = `${(Math.abs(c.phi) / max) * 50}%`
+          return (
+            <div key={c.id}>
+              <div className="flex items-baseline justify-between gap-3 text-xs">
+                <span className="font-medium text-slate-700 truncate">{c.label}</span>
+                <span className={cx('font-bold tabular-nums shrink-0',
+                                    positive ? 'text-emerald-600' : 'text-red-600')}>
+                  {positive ? '+' : ''}{c.phi.toFixed(1)}
+                </span>
+              </div>
+              {/* signed bar: center line = baseline, right = helps, left = hurts */}
+              <div className="mt-1 relative h-2 rounded bg-slate-100">
+                <span className="absolute inset-y-0 left-1/2 w-px bg-slate-300" />
+                <span
+                  className={cx('absolute inset-y-0 rounded transition-all duration-700',
+                                positive ? 'bg-emerald-500 left-1/2' : 'bg-red-500')}
+                  style={positive ? { width } : { width, right: '50%' }}
+                />
+              </div>
+              {c.detail && <div className="mt-0.5 text-[11px] text-slate-400">{c.detail}</div>}
+            </div>
+          )
+        })}
+      </div>
+
+      {method && <p className="mt-3 text-[11px] text-slate-400 leading-relaxed border-t border-slate-100 pt-2">{method}</p>}
+    </div>
+  )
+}
+
+// ------------------------------------------------- regulatory citations -----
+export function Citations({ citations, className }) {
+  if (!citations?.length) return null
+  return (
+    <div className={cx('space-y-2', className)}>
+      {citations.map((c) => (
+        <details key={c.ref} className="group rounded-lg border border-slate-200 bg-slate-50/70">
+          <summary className="flex items-center gap-2 cursor-pointer select-none px-3 py-2 text-xs">
+            <span className="font-mono font-bold text-blue-700 shrink-0">{c.ref}</span>
+            <span className="text-slate-500 truncate">{c.title}</span>
+          </summary>
+          <p className="px-3 pb-2.5 text-[11px] leading-relaxed text-slate-500 italic">“{c.excerpt}…”</p>
+        </details>
+      ))}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------- trace console ---
 const KIND_STYLE = {
   req:  { glyph: '→', cls: 'text-sky-300' },

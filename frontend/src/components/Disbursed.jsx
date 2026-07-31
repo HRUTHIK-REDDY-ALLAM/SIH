@@ -46,10 +46,11 @@ export default function Disbursed({ run, onHome }) {
         <p className="mt-2 text-sm text-slate-500">
           NEFT to {st.account ?? 'your registered account'} · {st.utr ?? '—'} <span className="text-slate-400">(simulated rails)</span>
         </p>
-        <div className="mt-3 flex justify-center">
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
           <Pill tone="emerald">
             {repaid ? `Repaid — lien released by ${APP.financier}` : `Funds disbursed by ${APP.financier} · deal #${deal.id}`}
           </Pill>
+          {st.itfsRef && <Pill tone="blue">{APP.itfs} · {st.itfsRef}</Pill>}
         </div>
       </div>
 
@@ -61,12 +62,12 @@ export default function Disbursed({ run, onHome }) {
         <TimelineNode
           first done icon={Banknote}
           title={`${inr(decision.net)} disbursed to you`}
-          text={`${decision.advancePct}% advance of ${inr(decision.advance)}, minus the ${decision.feePct} flat fee (${inr(decision.fee)}). No EMIs, no collateral. A lien on this receivable is now registered to ${APP.financier}.`}
+          text={`${decision.advancePct}% advance of ${inr(decision.advance)}, minus the ${decision.feePct} flat fee (${inr(decision.fee)}). No EMIs, no collateral. Placed on ${st.itfsPlatform ?? APP.itfs} and a lien on this receivable — anchored by IRN and content fingerprint — is now registered to ${APP.financier}.`}
         />
         <TimelineNode
           done={repaid} icon={Landmark}
           title={`${st.payDate ?? invoice.due} — ${st.payer ?? invoice.buyer.name} pays the invoice`}
-          text={`${inr(invoice.amount)} lands in the TradeBridge escrow account (${st.tenorDays ?? '—'}-day tenor).`}
+          text={`${inr(invoice.amount)} lands in the ${APP.name} escrow account (${st.tenorDays ?? '—'}-day tenor).`}
         />
         <TimelineNode
           done={repaid} icon={RefreshCw}

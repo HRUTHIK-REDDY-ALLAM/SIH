@@ -4,8 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import select
 
+from .cache import get_cache
+from .config import APP_NAME, APP_TAGLINE
 from .db import Base, SessionLocal, engine
 from .models import User
+from .pipeline.retriever import get_retriever
 from .routers import admin, auth_routes, consents, deals, financier, invoices
 from .seed_data import seed
 
@@ -20,15 +23,21 @@ async def lifespan(_app: FastAPI):
             print("Seeded demo data (exporter: demo@saanvi.in / financier: fin@nexacapital.in — password demo1234)")
     finally:
         db.close()
+    retriever = get_retriever()  # warm the BM25 index over the regulatory corpus
+    print(f"{APP_NAME} up — cache: {get_cache().name} · "
+          f"regulatory corpus: {len(retriever.passages)} passages indexed")
     yield
 
 
 app = FastAPI(
-    title="TradeBridge AI API",
-    description="Underwriting decisioning API — FastAPI + LangGraph + SQLite. "
-                "External data sources are mock adapters over synthetic data; "
-                "the lien registry, consent enforcement, scoring and audit log are real.",
-    version="1.0.0",
+    title=f"{APP_NAME} API",
+    description=f"{APP_TAGLINE}. Decisioning API — FastAPI + LangGraph + SQLAlchemy "
+                "(PostgreSQL via Docker Compose, SQLite for zero-setup local runs) with a Redis "
+                "cache/session layer. External data sources are mock adapters over synthetic data; "
+                "the lien registry, invoice fingerprinting, trade-graph cycle detection, consent "
+                "enforcement, Shapley score attribution, RAG-grounded compliance and the audit log "
+                "are real.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 

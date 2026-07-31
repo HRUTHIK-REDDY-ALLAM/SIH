@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ArrowRight, KeyRound, Landmark, Lock } from 'lucide-react'
 import { api } from '../api'
-import { DEMO_ACCOUNTS } from '../data'
+import { APP, DEMO_ACCOUNTS } from '../data'
 import { Button, Card, ErrorBox, Pill } from './ui'
 
 export default function Login({ onLogin }) {
@@ -30,9 +30,9 @@ export default function Login({ onLogin }) {
   return (
     <div className="max-w-md mx-auto pt-10 space-y-5">
       <div className="text-center">
-        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Sign in to TradeBridge</h1>
+        <h1 className="text-2xl font-extrabold tracking-tight text-slate-900">Sign in to {APP.name}</h1>
         <p className="mt-1.5 text-sm text-slate-500">
-          Real accounts, real sessions — auth is served by the FastAPI backend.
+          Real accounts, real sessions — OAuth2/JWT served by the FastAPI backend.
         </p>
       </div>
 

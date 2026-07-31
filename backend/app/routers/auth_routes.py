@@ -5,7 +5,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..auth import get_current_user, hash_password, issue_token, verify_password
+from ..auth import (create_access_token, get_current_user, hash_password,
+                    verify_password)
 from ..db import get_db
 from ..models import Msme, User
 
@@ -53,7 +54,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
                 role="msme", msme_id=msme.id)
     db.add(user)
     db.commit()
-    return {"token": issue_token(db, user), "user": _user_payload(user)}
+    return {"token": create_access_token(user), "user": _user_payload(user)}
 
 
 @router.post("/login")
@@ -61,7 +62,7 @@ def login(body: Credentials, db: Session = Depends(get_db)):
     user = db.execute(select(User).where(User.email == body.email.lower())).scalars().first()
     if user is None or not verify_password(body.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return {"token": issue_token(db, user), "user": _user_payload(user)}
+    return {"token": create_access_token(user), "user": _user_payload(user)}
 
 
 @router.get("/me")

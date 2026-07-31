@@ -1,4 +1,4 @@
-"""Start the TradeBridge AI API server: python run.py"""
+"""Start the VittSetu API server: python run.py"""
 import uvicorn
 
 if __name__ == "__main__":

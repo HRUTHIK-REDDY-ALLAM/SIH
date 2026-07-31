@@ -1,10 +1,12 @@
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
-from sqlalchemy import func, select
+from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import config
-from ..adapters import registry, settlement
+from .. import cache, config
+from ..adapters import itfs, registry, settlement
 from ..audit import Recorder
 from ..auth import get_current_user, require_msme
 from ..db import get_db, now_utc
@@ -19,7 +21,7 @@ BLOCKING_STATUSES = ("running", "approved", "conditional", "manual_review", "fin
 
 
 class DealRequest(BaseModel):
-    invoice_id: int
+    invoice_id: int = Field(gt=0, description="ID of a pending invoice owned by the caller")
 
 
 @router.post("/deals", status_code=201)
@@ -68,7 +70,15 @@ def _load_deal(db: Session, deal_id: int, user: User) -> FinancingDeal:
 
 @router.get("/deals/{deal_id}")
 def get_deal(deal_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    return serialize_deal(db, _load_deal(db, deal_id, user))
+    deal = _load_deal(db, deal_id, user)
+    if deal.status != "running":
+        cached = cache.get_cached_deal(deal.id)
+        if cached is not None:
+            return json.loads(cached)
+    payload = serialize_deal(db, deal)
+    if deal.status != "running":
+        cache.cache_deal(deal.id, json.dumps(payload))
+    return payload
 
 
 @router.post("/deals/{deal_id}/accept")
@@ -79,25 +89,37 @@ def accept_deal(deal_id: int, user: User = Depends(require_msme), db: Session = 
 
     invoice = deal.invoice
     rec = Recorder(db, deal.id)
+
+    # 1. Place the deal with the licensed financier via the ITFS platform (mock).
+    placement = itfs.place_deal(deal_id=deal.id, amount=deal.advance_amount,
+                                msme_name=user.msme.short_name, score=deal.score)
+    # 2. Register the lien in the central registry (real — this is what the
+    #    fraud node queries on every future request).
+    lien_ref = f"VS-{deal.id:05d}"
+    registry.register_lien(db, invoice.irn, config.OUR_LENDER, lien_ref,
+                           fingerprint=invoice.fingerprint)
+    # 3. Disburse over the (mock) payment rails.
     payout = settlement.disburse(deal_id=deal.id, amount=deal.net_amount,
                                  account=user.msme.bank_account)
-    lien_ref = f"TB-{deal.id:05d}"
-    registry.register_lien(db, invoice.irn, config.OUR_LENDER, lien_ref)
 
     invoice.status = "financed"
     deal.status = "financed"
     deal.financed_at = now_utc()
     decision = dict(deal.decision or {})
     st = dict(decision.get("settlement") or {})
-    st.update({"utr": payout["utr"], "rail": payout["rail"], "account": payout["account"]})
+    st.update({"utr": payout["utr"], "rail": payout["rail"], "account": payout["account"],
+               "itfsRef": placement["platform_ref"], "itfsPlatform": placement["platform"]})
     decision["settlement"] = st
     deal.decision = decision
     db.commit()
+    cache.invalidate_deal(deal.id)
 
-    rec.settlement(f"Offer accepted · disbursing {inr(deal.net_amount)} to {user.msme.bank_account} "
-                   f"via {payout['rail']}")
-    rec.settlement(f"Disbursed — {payout['utr']}")
-    rec.settlement(f"Lien registered on {irn_short(invoice.irn)} by {config.OUR_LENDER} (ref {lien_ref})")
+    rec.settlement(f"Offer accepted · placed on {placement['platform']} — accepted by "
+                   f"{placement['financier']} (ref {placement['platform_ref']})")
+    rec.settlement(f"Lien registered on {irn_short(invoice.irn)} by {config.OUR_LENDER} "
+                   f"(ref {lien_ref} · fingerprint {invoice.fingerprint[:10]}…)")
+    rec.settlement(f"Disbursing {inr(deal.net_amount)} to {user.msme.bank_account} via {payout['rail']} — "
+                   f"{payout['utr']}")
     return serialize_deal(db, deal)
 
 
@@ -108,6 +130,7 @@ def request_review(deal_id: int, user: User = Depends(require_msme), db: Session
         raise HTTPException(status_code=409, detail=f"Deal is {deal.status} — manual review not applicable")
     deal.status = "manual_review"
     db.commit()
+    cache.invalidate_deal(deal.id)
     Recorder(db, deal.id).override("Exporter requested manual review — routed to the Nexa Capital credit desk.")
     return serialize_deal(db, deal)
 

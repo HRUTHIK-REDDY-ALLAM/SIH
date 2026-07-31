@@ -19,7 +19,7 @@ export async function api(path, { method = 'GET', body, token } = {}) {
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
-    throw new ApiError(`Cannot reach the TradeBridge API at ${BASE} — is the backend running? (cd backend && python run.py)`, 0)
+    throw new ApiError(`Cannot reach the VittSetu API at ${BASE} — is the backend running? (cd backend && python run.py)`, 0)
   }
   if (!res.ok) {
     let detail = `${res.status} ${res.statusText}`

@@ -41,7 +41,9 @@ function Logo() {
         <line x1="4" y1="22" x2="28" y2="22" stroke="#ffffff" strokeWidth="2" />
       </svg>
       <div className="leading-tight">
-        <div className="font-extrabold text-[17px] tracking-tight text-white">{APP.name}</div>
+        <div className="font-extrabold text-[17px] tracking-tight text-white">
+          {APP.name} <span className="font-normal text-blue-300 text-[13px]">वित्त सेतु</span>
+        </div>
         <div className="text-[11px] text-blue-200 hidden sm:block">{APP.tagline}</div>
       </div>
     </div>

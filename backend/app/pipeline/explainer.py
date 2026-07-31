@@ -1,13 +1,18 @@
 """Builds the plain-English decision record from real, computed features.
 
-The templates interpolate actual values from the pipeline run (not canned
-strings). Optionally, if ANTHROPIC_API_KEY is set and the `anthropic` package
-is installed, the reasons are rewritten by Claude over the same facts — the
-app never requires it and falls back to the templates on any failure.
+The templates interpolate actual values from the pipeline run; the score's
+feature attribution (exact Shapley over the additive model) and the compliance
+node's regulatory citations ride along inside the decision JSON, so the "why"
+is a computation plus sources, not just prose.
+
+Optionally, if ANTHROPIC_API_KEY is set and the `anthropic` package is
+installed, the reason bullets are rewritten by Claude over the same facts —
+the app never requires it and falls back to the templates on any failure.
 """
 import json
 import os
 
+from ..fingerprint import short as fp_short
 from ..serialize import fmt_date, inr
 
 
@@ -29,7 +34,8 @@ def offer_numbers(amount: int, advance_pct: int, fee_rate: float) -> dict:
 
 
 def build_offer_decision(*, outcome: str, scored: dict, features: dict, invoice, buyer,
-                         tenor_days: int, extra_reasons: list[str] | None = None) -> dict:
+                         tenor_days: int, citations: list[dict] | None = None,
+                         extra_reasons: list[str] | None = None) -> dict:
     nums = offer_numbers(invoice.amount, scored["advance_pct"], scored["fee_rate"])
     fee = nums["fee"]
     n_filings = features.get("gst_filings_total", 0)
@@ -47,11 +53,12 @@ def build_offer_decision(*, outcome: str, scored: dict, features: dict, invoice,
             f"comfortably cover existing obligations.",
             "The invoice is genuine — its IRN is registered on the government e-invoice registry and every "
             "field matches the e-invoice record.",
-            "No double-financing — the central lien registry shows no other claim on this receivable, and no "
-            "circular-trade patterns were found around it.",
+            "No double-financing — neither the invoice's IRN nor its content fingerprint matches any active "
+            "lien in the central registry, and the trade graph shows no circular-financing loop.",
             f"Reliable buyer — {buyer.name} (Singapore, incorporated {features.get('buyer_incorporated', '—')}) "
             f"has settled {hist_n} prior shipments, paying on average {features.get('avg_days_early', 0):.1f} days early.",
-            f"A {tenor_days}-day tenor to a proven payer keeps the exposure short and predictable.",
+            f"A {tenor_days}-day tenor to a proven payer keeps the exposure short — well inside the 9-month "
+            "FEMA realisation window.",
         ]
     else:  # conditional
         headline = f"Conditional offer — {inr(nums['advance'])} available now"
@@ -70,11 +77,13 @@ def build_offer_decision(*, outcome: str, scored: dict, features: dict, invoice,
     if extra_reasons:
         reasons.extend(extra_reasons)
 
-    decision = {
+    return {
         "outcome": outcome,
         "score": scored["score"],
         "band": scored["band"],
         "scoreComponents": scored["components"],
+        "attribution": scored.get("attribution"),
+        "citations": citations or [],
         "headline": headline,
         "banner": banner,
         **nums,
@@ -89,25 +98,34 @@ def build_offer_decision(*, outcome: str, scored: dict, features: dict, invoice,
             "utr": None,
         },
     }
-    return decision
 
 
-def build_duplicate_decline(*, lien, irn_short: str) -> dict:
+def build_duplicate_decline(*, lien, irn_short: str, matched_by: str,
+                            fingerprint: str = "") -> dict:
+    resubmission = "fingerprint" in matched_by and "IRN" not in matched_by
     return {
         "outcome": "declined",
         "headline": "Declined — duplicate financing detected",
-        "banner": "This invoice is already financed with another lender. TradeBridge blocked it automatically.",
+        "banner": "This receivable is already financed with another lender. VittSetu blocked it automatically.",
         "evidence": {
             "lender": lien.lender,
             "financedOn": fmt_date(lien.financed_on),
             "ref": lien.ref,
+            "matchedBy": matched_by,
+            "fingerprint": fp_short(fingerprint or lien.fingerprint),
             "status": "Active lien on this receivable",
         },
         "reasons": [
-            f"This exact invoice ({irn_short}) already carries an active lien — {lien.lender} financed it "
-            f"on {fmt_date(lien.financed_on)} (registry ref {lien.ref}).",
+            (f"The invoice's content fingerprint matches an active lien even though its IRN differs — "
+             f"the same underlying receivable appears to have been re-invoiced. {lien.lender} financed it "
+             f"on {fmt_date(lien.financed_on)} (registry ref {lien.ref})."
+             if resubmission else
+             f"This exact invoice ({irn_short}) already carries an active lien — {lien.lender} financed it "
+             f"on {fmt_date(lien.financed_on)} (registry ref {lien.ref}), and its hash-anchored fingerprint "
+             f"matches the registry record."),
             "Financing the same receivable twice means two lenders would depend on one buyer payment. "
-            "That is double financing, and TradeBridge blocks it automatically.",
+            "That is double financing — a recognised trade-finance fraud typology — and the registry check "
+            "is an absolute bar.",
             "The decline is specific to this invoice. Your GST and bank profile looked healthy — any other "
             "unpledged invoice can still be financed today.",
         ],
@@ -119,6 +137,30 @@ def build_duplicate_decline(*, lien, irn_short: str) -> dict:
     }
 
 
+def build_circular_decline(*, cycle: list[str]) -> dict:
+    path = " → ".join(cycle + [cycle[0]])
+    return {
+        "outcome": "declined",
+        "headline": "Declined — circular trading detected",
+        "banner": "Financing this invoice would close a loop in the trade graph — a circular-trading structure.",
+        "evidence": {
+            "lender": "—",
+            "financedOn": "—",
+            "ref": "graph cycle",
+            "matchedBy": "trade-graph cycle detection",
+            "status": path,
+        },
+        "reasons": [
+            f"The financing-relationship graph contains a cycle involving this deal's parties: {path}. "
+            "Circular chains inflate apparent trade volume without genuine underlying commerce.",
+            "A plain duplicate lookup cannot catch this — it is only visible when financing relationships "
+            "are modelled as a graph and scanned for loops.",
+            "The deal has been logged for review; the financier network has been notified.",
+        ],
+        "nextSteps": ["Contact support if these trading relationships have a genuine commercial explanation."],
+    }
+
+
 def build_verification_decline(*, irn_short: str, problem: str) -> dict:
     return {
         "outcome": "declined",
@@ -126,20 +168,22 @@ def build_verification_decline(*, irn_short: str, problem: str) -> dict:
         "banner": "The e-invoice registry check failed, so the agent cannot finance this receivable.",
         "reasons": [
             f"Verification of {irn_short} failed: {problem}.",
-            "TradeBridge only finances receivables whose government e-invoice record exists and matches exactly.",
+            "VittSetu only finances receivables whose government e-invoice record exists and matches exactly.",
             "Correct the invoice with your buyer and regenerate the e-invoice, then request financing again.",
         ],
         "nextSteps": ["Regenerate the e-invoice on the IRP and retry the request."],
     }
 
 
-def build_thin_decline(*, scored: dict) -> dict:
+def build_thin_decline(*, scored: dict, citations: list[dict] | None = None) -> dict:
     return {
         "outcome": "declined",
         "headline": "Declined — risk score below financing threshold",
         "banner": f"Composite risk score {scored['score']}/100 is below the minimum for any advance.",
         "score": scored["score"],
         "band": scored["band"],
+        "attribution": scored.get("attribution"),
+        "citations": citations or [],
         "reasons": [
             f"The composite risk score came out at {scored['score']}/100 — under the minimum of 45 that the "
             "financing policy allows, even for a reduced advance.",
@@ -153,7 +197,7 @@ def build_thin_decline(*, scored: dict) -> dict:
 def _maybe_polish(reasons: list[str], facts: dict) -> list[str]:
     """Optional: have Claude rewrite the explanation over the same facts.
     Off unless ANTHROPIC_API_KEY is set and the `anthropic` package is present."""
-    if not os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("TB_DISABLE_LLM"):
+    if not os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("VS_DISABLE_LLM"):
         return reasons
     try:
         import anthropic  # optional dependency: pip install anthropic

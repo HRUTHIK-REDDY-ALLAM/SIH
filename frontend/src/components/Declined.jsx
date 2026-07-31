@@ -21,31 +21,35 @@ export default function Declined({ run, onHome }) {
             </div>
             <h1 className="mt-1 text-xl sm:text-2xl font-extrabold leading-snug">{decision.headline}</h1>
             <p className="mt-2 text-sm text-red-50/90 leading-relaxed">
-              {ev ? (
-                <>The agent found an <span className="font-bold">active lien</span> on this exact invoice
-                ({invoice.irn}) in the central receivables registry. The same {inr(invoice.amount)} receivable
-                cannot back two loans.</>
+              {ev?.lender && ev.lender !== '—' ? (
+                <>The agent found an <span className="font-bold">active lien</span> on this receivable in the
+                central registry — matched by <span className="font-bold">{ev.matchedBy}</span>. The same{' '}
+                {inr(invoice.amount)} receivable cannot back two loans.</>
               ) : decision.banner}
             </p>
           </div>
         </div>
 
-        {/* registry evidence — the actual row the fraud node found */}
+        {/* registry evidence — the actual row / graph cycle the fraud node found */}
         {ev && (
           <div className="mt-5 rounded-xl bg-[#12060a]/45 border border-red-400/40 p-4">
             <div className="text-[11px] font-bold tracking-widest text-red-200 mb-3">
-              REGISTRY RECORD — READ LIVE FROM financing_registry
+              {ev.ref === 'graph cycle'
+                ? 'TRADE-GRAPH CYCLE — DETECTED LIVE (networkx, Johnson\'s algorithm)'
+                : 'REGISTRY RECORD — READ LIVE FROM financing_registry'}
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2.5 text-sm">
               {[
                 ['Financed by', ev.lender],
                 ['Financed on', ev.financedOn],
                 ['Registry reference', ev.ref],
-                ['Lien status', ev.status],
-              ].map(([k, v]) => (
+                ['Matched by', ev.matchedBy],
+                ['Invoice fingerprint', ev.fingerprint],
+                [ev.ref === 'graph cycle' ? 'Cycle' : 'Lien status', ev.status],
+              ].filter(([, v]) => v && v !== '—').map(([k, v]) => (
                 <div key={k} className="flex flex-col">
                   <span className="text-[11px] text-red-200/80">{k}</span>
-                  <span className="font-semibold font-mono text-[13px]">{v}</span>
+                  <span className="font-semibold font-mono text-[13px] break-words">{v}</span>
                 </div>
               ))}
             </div>
@@ -88,7 +92,7 @@ export default function Declined({ run, onHome }) {
       </details>
 
       <div className="flex flex-col sm:flex-row gap-3">
-        {ev && (
+        {ev?.ref && ev.ref !== 'graph cycle' && (
           <Button variant="ghost" size="lg" className="flex-1"
                   onClick={() => show(`Dispute logged against ${ev.ref} — the registry operator responds within 2 business days (simulated).`)}>
             Raise a dispute
